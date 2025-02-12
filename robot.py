@@ -3,6 +3,9 @@
 import logging
 import re
 import time
+import os
+import jieba
+import pandas as pd
 import xml.etree.ElementTree as ET
 from queue import Empty
 from threading import Thread
@@ -37,6 +40,7 @@ class Robot(Job):
         self.wxid = self.wcf.get_self_wxid()
         self.allContacts = self.getAllContacts()
         self._msg_timestamps = []
+        self.keyword_rules = self.load_keyword_config()
 
         if ChatType.is_in_chat_types(chat_type):
             if chat_type == ChatType.TIGER_BOT.value and TigerBot.value_check(self.config.TIGERBOT):
@@ -114,7 +118,74 @@ class Robot(Job):
                         status = True
 
         return status
+    
+    def toSearchKeyWords(self, msg: WxMsg) -> bool:
+        """
+        处理搜索消息
+        :param msg: 微信消息结构
+        :return: 处理状态，`True` 成功，`False` 失败
+        """
+        status = False
+        texts = re.findall(r"^搜索(.*)$", msg.content)
+        # 如果匹配到“搜索xxxx”
+        if texts:
+            self.LOG.warning(f"搜索关键词: {texts[0]}")
+            query = texts[0].strip()  # 去除可能的空白字符
+            replies = []  # 收集所有匹配的回复
 
+            # 精确搜索
+            for rule in self.keyword_rules:
+                if rule["roomID"] == msg.roomid and rule["keyword"] in query:
+                    if rule["reply"]:
+                        replies.append(rule["keyword"]+'\n'+rule["reply"])
+            
+            # 分词，模糊搜索
+            replies.append("【模糊搜索结果】")
+            segList = [seg for seg in jieba.cut_for_search(query) if len(seg) > 1]
+            for seg in segList:
+                for rule in self.keyword_rules:
+                    if rule["roomID"] == msg.roomid and seg in rule["keyword"]:
+                        if rule["reply"]:
+                            replies.append(rule["keyword"]+'\n'+rule["reply"])
+
+            # 如果有匹配的规则，则合并所有回复，否则不回复
+            if replies:
+                # 防止回复太多引发风暴，只取前3条
+                if len(replies) > 4:
+                    combined = "\n\n".join(replies[:4]) + f"\n\n总共{len(replies)}条，后续已被忽略，请尝试修正关键词。"
+                else:
+                    combined = "\n\n".join(replies)
+                self.sendTextMsg(combined, msg.roomid, msg.sender)
+            else:
+                pass
+            return True
+        return status
+    
+    def load_keyword_config(self) -> list:
+        """
+        读取所有 answer_*.xlsx 文件，返回一个规则列表，每个规则为字典，包含：
+        roomID, keyword, reply
+        """
+        try:
+            base_path = os.path.dirname(os.path.abspath(__file__))
+            rules_list = []
+            for filename in os.listdir(base_path):
+                if filename.startswith("answer_") and filename.endswith(".xlsx"):
+                    excel_path = os.path.join(base_path, filename)
+                    # 跳过第一行
+                    df = pd.read_excel(excel_path, header=None,skiprows=1)
+                    df.columns = ["roomID", "keyword", "reply"]
+                    rules = df.to_dict(orient="records")
+                    rules_list.extend(rules)
+            if rules_list:
+                self.LOG.info(f"加载关键词规则: {rules_list}")
+            else:
+                self.LOG.info("未找到匹配的 answer_*.xlsx 文件")
+            return rules_list
+        except Exception as e:
+            self.LOG.error(f"加载关键词规则出现错误: {e}")
+            return []
+            
     def toChitchat(self, msg: WxMsg) -> bool:
         """闲聊，接入 ChatGPT
         """
@@ -154,7 +225,8 @@ class Robot(Job):
                 self.toAt(msg)
 
             else:  # 其他消息
-                self.toChengyu(msg)
+                #self.toChengyu(msg)
+                self.toSearchKeyWords(msg)
 
             return  # 处理完群聊信息，后面就不需要处理了
 
