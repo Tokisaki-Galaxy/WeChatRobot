@@ -25,7 +25,7 @@ from base.func_xinghuo_web import XinghuoWeb
 from configuration import Config
 from constants import ChatType
 from job_mgmt import Job
-
+from hitokoto import get_hitokoto
 __version__ = "39.2.4.0"
 
 
@@ -40,7 +40,7 @@ class Robot(Job):
         self.wxid = self.wcf.get_self_wxid()
         self.allContacts = self.getAllContacts()
         self._msg_timestamps = []
-        self.keyword_rules = self.load_keyword_config()
+        self.keyword_rules = self.load_keyword_config()  # Load rules during initialization
 
         if ChatType.is_in_chat_types(chat_type):
             if chat_type == ChatType.TIGER_BOT.value and TigerBot.value_check(self.config.TIGERBOT):
@@ -135,29 +135,27 @@ class Robot(Job):
 
             # 精确搜索
             for rule in self.keyword_rules:
-                if rule["roomID"] == msg.roomid and rule["keyword"] in query:
-                    if rule["reply"]:
-                        replies.append(rule["keyword"]+'\n'+rule["reply"])
+                if rule['roomID'] == msg.roomid and query in rule["keyword"]:
+                    if rule['reply']:
+                        replies.append(rule['keyword']+'\n'+rule['reply'])
             
-            # 分词，模糊搜索
-            replies.append("【模糊搜索结果】")
-            segList = [seg for seg in jieba.cut_for_search(query) if len(seg) > 1]
-            for seg in segList:
-                for rule in self.keyword_rules:
-                    if rule["roomID"] == msg.roomid and seg in rule["keyword"]:
-                        if rule["reply"]:
-                            replies.append(rule["keyword"]+'\n'+rule["reply"])
+            # 如果精确搜索没有结果，再进行分词，模糊搜索
+            if not replies:
+                replies.append("【模糊搜索结果】")
+                segList = [seg for seg in jieba.cut_for_search(query) if len(seg) > 1]
+                for seg in segList:
+                    for rule in self.keyword_rules:
+                        if rule['roomID'] == msg.roomid and seg in rule['keyword']:
+                            if rule['reply']:
+                                replies.append(rule['keyword']+'\n'+rule['reply'])
 
-            # 如果有匹配的规则，则合并所有回复，否则不回复
-            if replies:
-                # 防止回复太多引发风暴，只取前3条
-                if len(replies) > 4:
-                    combined = "\n\n".join(replies[:4]) + f"\n\n总共{len(replies)}条，后续已被忽略，请尝试修正关键词。"
-                else:
-                    combined = "\n\n".join(replies)
-                self.sendTextMsg(combined, msg.roomid, msg.sender)
+            # 防止回复太多引发风暴，只取前3条
+            if len(replies) > 4:
+                combined = "\n\n".join(replies[:4]) + f"\n\n总共{len(replies)}条，后续已被忽略，请尝试修正关键词。"
             else:
-                pass
+                combined = "\n\n".join(replies)+'\n'+get_hitokoto()
+
+            self.sendTextMsg(combined, msg.roomid, msg.sender)
             return True
         return status
     
@@ -166,25 +164,28 @@ class Robot(Job):
         读取所有 answer_*.xlsx 文件，返回一个规则列表，每个规则为字典，包含：
         roomID, keyword, reply
         """
+        rules_list = []
         try:
             base_path = os.path.dirname(os.path.abspath(__file__))
-            rules_list = []
             for filename in os.listdir(base_path):
                 if filename.startswith("answer_") and filename.endswith(".xlsx"):
                     excel_path = os.path.join(base_path, filename)
-                    # 跳过第一行
-                    df = pd.read_excel(excel_path, header=None,skiprows=1)
-                    df.columns = ["roomID", "keyword", "reply"]
-                    rules = df.to_dict(orient="records")
-                    rules_list.extend(rules)
+                    try:
+                        # Skip the first row
+                        df = pd.read_excel(excel_path, header=None, skiprows=1)
+                        df.columns = ["roomID", "keyword", "reply"]
+                        rules = df.to_dict(orient="records")
+                        rules_list.extend(rules)
+                    except Exception as e:
+                        self.LOG.error(f"Error reading Excel file {filename}: {e}")
+                        continue
             if rules_list:
-                self.LOG.info(f"加载关键词规则: {rules_list}")
+                self.LOG.warning(f"加载关键词规则: {len(rules_list)}条")
             else:
-                self.LOG.info("未找到匹配的 answer_*.xlsx 文件")
-            return rules_list
+                self.LOG.error("未找到匹配的 answer_*.xlsx 文件")
         except Exception as e:
             self.LOG.error(f"加载关键词规则出现错误: {e}")
-            return []
+        return rules_list
             
     def toChitchat(self, msg: WxMsg) -> bool:
         """闲聊，接入 ChatGPT

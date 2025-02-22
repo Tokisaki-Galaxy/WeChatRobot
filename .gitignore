@@ -10,3 +10,4 @@ logs/
 *.log.*
 
 config.yaml
+answer*.xlsx
