@@ -148,16 +148,33 @@ class Robot(Job):
                         if rule['roomID'] == msg.roomid and seg in rule['keyword']:
                             if rule['reply']:
                                 replies.append(rule['keyword']+'\n'+rule['reply'])
-
-            # 防止回复太多引发风暴，只取前3条
-            if len(replies) > 4:
-                combined = "\n\n".join(replies[:4]) + f"\n\n总共{len(replies)}条，后续已被忽略，请尝试修正关键词。"
-            else:
-                combined = "\n\n".join(replies)+'\n'+get_hitokoto()
-
-            self.sendTextMsg(combined, msg.roomid, msg.sender)
-            return True
-        return status
+    
+            # 如果有匹配的规则，则合并所有回复，否则不回复
+            if replies:
+                combined = ""
+                # 判断是否为模糊搜索结果（检查第一条是否为模糊搜索标识）
+                if replies[0] == "【模糊搜索结果】":
+                    actual_count = len(replies) - 1  # 减去模糊搜索标识
+                    if actual_count == 0:
+                        # 模糊搜索也无结果
+                        combined = get_hitokoto() + '\n感谢您的反馈，资料库正在更新，后续会补齐您想要的资料'
+                    else:
+                        # 最多显示前3条实际结果（加上标识共4条）
+                        if len(replies) > 4:
+                            combined = "\n\n".join(replies[:4]) + f"\n\n总共{actual_count}条，后续已被忽略，请尝试修正关键词。"
+                        else:
+                            combined = "\n\n".join(replies) + '\n' + get_hitokoto()
+                else:
+                    # 处理精确搜索结果
+                    if len(replies) > 3:
+                        combined = "\n\n".join(replies[:3]) + f"\n\n总共{len(replies)}条，后续已被忽略，请尝试修正关键词。"
+                    else:
+                        combined = "\n\n".join(replies) + '\n' + get_hitokoto()
+                
+                if combined:  # 确保combined不为空再发送
+                    self.sendTextMsg(combined, msg.roomid, msg.sender)
+                return True
+            return status
     
     def load_keyword_config(self) -> list:
         """
