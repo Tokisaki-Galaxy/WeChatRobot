@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+from collections import defaultdict
 import logging
 import re
 import time
@@ -129,52 +130,58 @@ class Robot(Job):
         texts = re.findall(r"^搜索(.*)$", msg.content)
         # 如果匹配到“搜索xxxx”
         if texts:
-            self.LOG.warning(f"搜索关键词: {texts[0]}")
             query = texts[0].strip()  # 去除可能的空白字符
             replies = []  # 收集所有匹配的回复
+            self.LOG.warning(f"在{msg.roomid}，搜索关键词: {query}")
 
             # 精确搜索
             for rule in self.keyword_rules:
-                if rule['roomID'] == msg.roomid and query in rule["keyword"]:
-                    if rule['reply']:
+                if rule['roomID'] == msg.roomid and query in rule["keyword"] and rule['reply']:
                         replies.append(rule['keyword']+'\n'+rule['reply'])
-            
+
             # 如果精确搜索没有结果，再进行分词，模糊搜索
             if not replies:
                 replies.append("【模糊搜索结果】")
                 segList = [seg for seg in jieba.cut_for_search(query) if len(seg) > 1]
+                self.LOG.info(f"进行模糊搜索，分词结果: {segList}")
+                # 使用字典记录规则匹配次数
+                rule_matches = defaultdict(int)
                 for seg in segList:
                     for rule in self.keyword_rules:
-                        if rule['roomID'] == msg.roomid and seg in rule['keyword']:
-                            if rule['reply']:
-                                replies.append(rule['keyword']+'\n'+rule['reply'])
+                        if rule['roomID'] == msg.roomid and seg in rule['keyword'] and rule['reply']:
+                                rule_key = f"{rule['keyword']}\n{rule['reply']}"  # 唯一标识规则
+                                rule_matches[rule_key] += 1
+                # 按匹配次数排序（使用二次排序确保稳定性）
+                sorted_rules = sorted(
+                    rule_matches.items(),
+                    key=lambda x: (-x[1], x[0]),  # 先按匹配次数降序，再按内容升序
+                )
+                # 添加排序后的结果（仅内容）
+                replies.extend([rule[0] for rule in sorted_rules])
     
             # 如果有匹配的规则，则合并所有回复，否则不回复
             if replies:
                 combined = ""
                 # 判断是否为模糊搜索结果（检查第一条是否为模糊搜索标识）
                 if replies[0] == "【模糊搜索结果】":
-                    actual_count = len(replies) - 1  # 减去模糊搜索标识
-                    if actual_count == 0:
-                        # 模糊搜索也无结果
-                        combined = get_hitokoto() + '\n感谢您的反馈，资料库正在更新，后续会补齐您想要的资料'
+                    actual_results = replies[1:]
+                    if len(actual_results) == 0:
+                        self.LOG.warning(f'搜索关键词：“{query}”，词组：“{segList}”的时候，数据库没有相关结果')
+                        combined = f"{get_hitokoto()}\n未搜索到相关结果。感谢反馈，正在完善资料库"
                     else:
-                        # 最多显示前3条实际结果（加上标识共4条）
-                        if len(replies) > 4:
-                            combined = "\n\n".join(replies[:4]) + f"\n\n总共{actual_count}条，后续已被忽略，请尝试修正关键词。"
-                        else:
-                            combined = "\n\n".join(replies) + '\n' + get_hitokoto()
+                        show_num = min(3, len(actual_results))
+                        truncate_note = f"\n\n（找到{len(actual_results)}条结果，已显示匹配度最高的{show_num}条）" if len(actual_results) > 3 else ""
+                        combined = "【最佳匹配】\n" + "\n\n".join(actual_results[:show_num]) + truncate_note
                 else:
                     # 处理精确搜索结果
-                    if len(replies) > 3:
-                        combined = "\n\n".join(replies[:3]) + f"\n\n总共{len(replies)}条，后续已被忽略，请尝试修正关键词。"
-                    else:
-                        combined = "\n\n".join(replies) + '\n' + get_hitokoto()
+                    show_num = min(3, len(replies))
+                    truncate_note = f"\n\n（共找到{len(replies)}条结果，已显示前{show_num}条）" if len(replies) > 3 else ""
+                    combined = "\n\n".join(replies[:show_num]) + truncate_note + f"\n{get_hitokoto()}"
                 
                 if combined:  # 确保combined不为空再发送
                     self.sendTextMsg(combined, msg.roomid, msg.sender)
-                return True
-            return status
+                    status=True
+        return status
     
     def load_keyword_config(self) -> list:
         """
@@ -262,7 +269,8 @@ class Robot(Job):
                     self.config.reload()
                     self.LOG.info("已更新")
             else:
-                self.toChitchat(msg)  # 闲聊
+                pass
+                #self.toChitchat(msg)  # 闲聊
 
     def onMsg(self, msg: WxMsg) -> int:
         try:
